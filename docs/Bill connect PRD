@@ -1,0 +1,203 @@
+# BillConnect — Product Requirements Document & Build Plan
+
+**Version:** 0.1 (Draft)
+**Date:** 2 June 2026
+**Owner:** Ravi
+**Status:** MVP in development — data pipeline phase
+
+---
+
+## 1. What We Are Building (One Paragraph)
+
+BillConnect is a **translation layer between UK commerce language and structured product identity**. It takes messy retail transaction strings — e.g. `TSCO S/S MLK 2L` — and resolves them into clean, structured product records (canonical name, category, nutrition, ingredients, allergens, price history). On top of that core engine sit two products: **SwipeBin** (consumer home-inventory and grocery management app) and a **B2B API** that sells the resolution + enrichment capability to other apps.
+
+---
+
+## 2. The Core Problem
+
+UK retail transaction strings are unreadable to software. A bank feed, receipt scan, or open-banking record shows `TSCO S/S MLK 2L` — which means nothing to an app trying to categorise spending or surface nutrition. Existing public data sources are incomplete:
+
+- **Open Food Facts (UK):** ~41% of products have a Nutriscore; ingredient coverage is patchy for retail SKUs; own-brand items are frequently missing entirely.
+- **Apify / generic scrapers:** return prices and names, rarely structured nutrition/ingredients; fragile against site changes.
+- **Commercial DBs (Nutritionix, FatSecret):** US-heavy, expensive, weak on UK discount retailers (Aldi, Iceland, Lidl).
+
+The defensible asset is **not** the scraping or the nutrition data. It is the **identity resolution** — consistently mapping dirty strings to one canonical product, deterministically enough that a fintech pipeline can depend on it.
+
+---
+
+## 3. System Architecture (Two Separate Systems)
+
+A recurring design principle: **keep the offline intelligence separate from the online product.** Do not merge them.
+
+| Layer | Job | Owner | Online/Offline |
+|---|---|---|---|
+| Normalisation | Clean messy text (lowercase, units, noise) | Us | Online |
+| Alias expansion | `tsco`→`tesco`, `s/s`→`semi skimmed` | Us | Online |
+| Candidate generation | Fast retrieval (BM25 / token overlap) | Us | Online |
+| Ranking | Hybrid weighted scoring | Us | Online |
+| Confidence gating | Accept / low-confidence / reject | Us | Online |
+| Product ID output | Stable contract for consumers | Us | Online |
+| Enrichment | Nutrition, ingredients, allergens | OFF / scrapers | Online (post-match) |
+| Alias discovery | Cluster strings → alias dictionaries | Us | **Offline** |
+| Dataset cleanup | Dedup, taxonomy, quality audit | Us | **Offline** |
+
+### 3.1 Online Resolver Pipeline
+
+```
+INPUT  "TSCO S/S MLK 2L"
+  → 1. Normalisation       (deterministic, cheap)
+  → 2. Alias expansion     (real accuracy leverage)
+  → 3. Candidate generation (BM25 / inverted index — top 5–20)
+  → 4. Ranking             (token sim + alias + embedding + retailer)
+  → 5. Confidence gate      (>0.85 accept / 0.6–0.85 low / <0.6 no match)
+  → 6. Product ID output    (stable JSON contract)
+  → 7. Enrichment           (OFF / scrape — OPTIONAL, post-match)
+OUTPUT structured product record
+```
+
+**Algorithm stance:**
+- Core resolver = **retrieval + ranking**, NOT clustering. Use BM25, Jaro-Winkler / Levenshtein, alias expansion, weighted scoring, probabilistic thresholding (Fellegi-Sunter is the closest academic model).
+- **No** K-means / Agglomerative / DBSCAN in the live path — those are offline-only.
+- Avoid LLM calls in the core path. Fintech consumers want determinism and stable outputs.
+
+### 3.2 Offline Intelligence (clustering belongs here)
+
+Clustering (K-means, Agglomerative, embeddings) is valuable but **offline only**:
+- Alias discovery — group `s/s milk`, `semi skim milk`, `semi skimmed milk` → generate alias rules.
+- Product deduplication across retailers.
+- Taxonomy / category normalisation.
+
+---
+
+## 4. The Moat
+
+> Resolving `TSCO S/S MLK 2L` correctly, consistently, and deterministically.
+
+Everything else — OFF, Apify, scraping — is **gap-filling after identity is solved**. If scraping or a third-party nutrition source becomes central, the product becomes a low-moat wrapper that is trivial to replicate. The resolver + the proprietary alias dictionary + the cleaned UK retail dataset are the defensible core.
+
+---
+
+## 5. Current Data State (Audit: 1–2 June 2026)
+
+| Store | Products | Nutrition | Ingredients | Allergens | Notes |
+|---|---|---|---|---|---|
+| Aldi | 400 | 0% | 100% | 0% (in progress) | Nutrition via OFF name-search underway |
+| Iceland | 326 | 0% | 100% | 0% | Same approach as Aldi |
+| Tesco | 337 | 70.9% | ~74.5% (+13 new) | 33.2% | Best-scraped store; refill complete |
+| Sainsbury's | 595 | 5.5% | 5.7% | 37.8% | Largest store, biggest gap |
+| Lidl | 24 | 0% | 0% | 0% | Small catalogue, low priority |
+
+### 5.1 Key Data-Quality Findings (Hard-Won)
+
+1. **The "100% barcode" claim was false.** Aldi `productId` is an internal article number (`solesta-sunflower-oil-...198481`); Iceland's is a URL slug. Neither is an EAN-8/13. **OFF barcode lookup does not work for Aldi/Iceland.** The sellable dataset must NOT advertise EAN coverage for these stores.
+2. **OFF name-search returns garbage if ungated.** Early runs filled ingredients with French placeholder text (`une eau minérale naturelle`) by matching the wrong products. Precision gating is mandatory.
+3. **Many "empty" fields are correct.** Single-ingredient products (oils, salts, plain milk, raw meat) have no rendered ingredients section. Empty is the right answer, not a bug.
+4. **`allergens` should only ever be filled, never overwritten** — merge logic must respect existing scraped values.
+
+---
+
+## 6. Enrichment Strategy (Validated Through Build)
+
+### 6.1 Allergen extraction — WORKS
+`enrich-allergens.js` detects the EU-14 allergens from ALL-CAPS / bold / colon-delimited markers in ingredient text. Correct behaviour confirmed on Tesco. **Depends entirely on real ingredient text being present** — it cannot invent data.
+
+### 6.2 Tesco ingredient refill — DONE
+`tesco-refill-ingredients.js`: single reused browser instance, `puppeteer-extra` + stealth, exact-match heading detection (avoids breadcrumb "Cooking Ingredients" false hits), checkpointing, random delays. Result: 86 missing products processed, 13 ingredients + 1 new allergen filled, 0 errors, 73 correctly-empty. 3 marketing-text false positives flagged for cleanup.
+
+### 6.3 Aldi / Iceland nutrition — IN PROGRESS (OFF name-search, gated)
+Because there are no real barcodes, use OFF **search** with strict validation:
+
+- **Rate limiting:** 600ms base delay + exponential backoff retry (1s/2s/4s, 3 attempts). Fixed the 10/20 fetch-error burst-throttle problem.
+- **Name cleaning:** strip slug/article number, keep human-readable name.
+- **Scoring:** token overlap; thresholds scaled to name length.
+- **Confidence hierarchy:** UK-tagged = high; no country tag = medium; non-UK-tagged-without-UK = reject.
+- **Category-drift rejection (current work):** use OFF `categories_tags`, not just the name, to reject fresh-vs-processed mismatches (e.g. `Red Pepper` → `Sweet Chilli & Red Pepper Crisps`).
+
+**Principle throughout: precision over coverage.** Better to leave a field empty than fill it with data a buyer would catch as wrong.
+
+### 6.4 Sainsbury's — NEXT (API probe first)
+The `uk-grocery-cli` repo revealed an internal endpoint:
+```
+GET https://www.sainsburys.co.uk/groceries-api/gol-services/product/v1/product
+    ?filter[keyword]=QUERY&page_size=24
+```
+**Probe first:** if this returns ingredients/nutrition in JSON, all 595 products are solvable fast with no DOM scraping. If not, fall back to a DOM detail-page scraper.
+
+### 6.5 Lidl — LOW PRIORITY (24 products)
+OFF search filtered by `stores_tags:lidl` + `countries:united-kingdom`, name-similarity matched, manual confidence review before save.
+
+---
+
+## 7. MVP Definition
+
+### 7.1 Hacky test (validate demand)
+List the cleanest sellable slice (Aldi + Iceland once enriched, or Tesco) as a downloadable dataset on Gumroad. Zero infrastructure. Measures whether anyone pays.
+
+### 7.2 MCP — Minimum Compelling Product (first chargeable version)
+- A clean, structured **UK grocery dataset** across ≥3 stores with honest field coverage and a per-product `data_quality_score`.
+- Delivered as JSON + CSV with a documented schema and a quality report.
+- Field list advertised **only where real** (no fake EAN claims).
+
+### 7.3 v2+
+- Live resolver **API** (the actual moat) with confidence scoring.
+- Monthly refresh + versioning.
+- White-label data feed and/or fintech partnership integrations.
+
+### 7.4 Explicitly OUT of MVP scope
+- Real-time price feeds (higher legal risk; sell nutrition/ingredients/allergens, not live prices).
+- Full 5-store completeness before first revenue.
+- Clustering/embedding infrastructure in the live path.
+
+---
+
+## 8. Monetisation (Non-API Paths, Prioritised)
+
+| Model | Effort | 12-mo potential | Ready when |
+|---|---|---|---|
+| Bulk dataset licensing (Gumroad) | Low | £5k–£20k | Now (Aldi+Iceland/Tesco) |
+| FMCG insight reports | Low | £8k–£30k | Now |
+| White-label health-app data feed | Medium | £15k–£50k | After Sainsbury's |
+| Allergen compliance managed service | Medium | £20k–£60k | After allergen coverage |
+| Fintech / PFM data partnership | High | £30k–£100k+ | After full data + resolver |
+
+**Legal posture:** sell *nutritional composition* data (factual), not live pricing/availability. Strip prices from the sellable dataset. Add buyer-responsibility ToS.
+
+---
+
+## 9. Action Plan
+
+### Today / This Week
+1. Finish category-drift guard on Aldi enrichment → verify on 20 → run all 400.
+2. Run OFF name-search enrichment on Iceland (same gated script).
+3. Run `enrich-allergens.js` on Aldi + Iceland once ingredients/nutrition land.
+4. Clean the 3 Tesco false positives; re-run allergen script on updated Tesco file.
+5. Probe Sainsbury's internal API.
+
+### Next
+6. Sainsbury's full enrichment (API or DOM, per probe result).
+7. Lidl fix (24 products).
+8. Build `export-dataset.js` → clean JSON/CSV + `quality-report.json` with per-field coverage and `data_quality_score`.
+
+### Then (First Revenue)
+9. List cleanest store-slice on Gumroad with honest spec sheet.
+10. Outreach to UK nutrition/health-app startups and FMCG/compliance buyers.
+
+---
+
+## 10. Engineering Principles (Learned in Build)
+
+- **Always test on a small sample (3–20) before a full run.** Identical output across "runs" = the edit never saved — verify the file on disk, don't trust the printout.
+- **Precision over coverage** on every enrichment gate.
+- **Fill empty fields only; never overwrite** existing scraped data.
+- **Distinguish error from genuine miss** in logs (`fetch-failed` vs `no-confident-match`).
+- **Reuse one browser instance**, close pages not the browser, checkpoint every N items, random delays.
+- **Empty can be the correct answer** — single-ingredient products have no ingredient list.
+
+---
+
+## 11. Open Questions / Risks
+
+- Does the Sainsbury's internal API return nutrition/ingredients, or only metadata? (Probe pending.)
+- What is the acceptable medium-confidence ratio before a dataset is "sellable"? (Needs a spot-check threshold.)
+- Legal review of scraping + resale posture before any public listing.
+- Will OFF name-search precision hold across 400+ products, or does the category-drift guard need expansion?

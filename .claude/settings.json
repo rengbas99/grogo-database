@@ -1,0 +1,65 @@
+{
+  "$comment": "Claude Code project settings for Grogo MVP. Place at .claude/settings.json in the repo root. Adjust paths/permissions to taste. Verify key names against current Claude Code docs (docs.claude.com) as the schema evolves.",
+
+  "permissions": {
+    "allow": [
+      "Read(./**)",
+      "Write(./final-products/**)",
+      "Write(./scraped-data/**)",
+      "Write(./dist/**)",
+      "Write(./*.json)",
+      "Write(./*.js)",
+      "Write(./*.log)",
+      "Bash(node *)",
+      "Bash(npm install*)",
+      "Bash(npm run *)",
+      "Bash(npx playwright install*)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(tail *)",
+      "Bash(grep *)",
+      "Bash(cat ./final-products/**)",
+      "Bash(ls *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./**/*.key)",
+      "Read(./**/serviceAccount*.json)",
+      "Read(./**/firebase-credentials*.json)",
+      "Write(./.env)",
+      "Bash(rm -rf *)",
+      "Bash(git push*)",
+      "Bash(curl * | bash)",
+      "Bash(* --token *)"
+    ]
+  },
+
+  "env": {
+    "$comment": "Real secrets belong in a .env file that is gitignored and denied above — never hardcode keys here.",
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
+
+  "$scraping_defaults_comment": "These are conventions for scripts, not enforced by Claude Code. Encoded here as a single source of truth the agent can read.",
+  "scraping_defaults": {
+    "min_delay_ms": 4000,
+    "max_delay_ms": 7000,
+    "browser_relaunch_every": 50,
+    "checkpoint_every": 10,
+    "retry_max_attempts": 3,
+    "retry_backoff_ms": [1000, 2000, 4000],
+    "use_stealth": true,
+    "fill_empty_only": true,
+    "never_overwrite": true,
+    "never_delete_audit": true
+  },
+
+  "$validation_guards_comment": "Mirror of the guards documented in CLAUDE.md so scripts can reference consistent thresholds.",
+  "validation_guards": {
+    "score_threshold_by_token_count": { "1": 0.90, "2": 0.75, "3_plus": 0.60 },
+    "drift_words": ["crisps", "chips", "seasoning", "flavour", "flavor", "sauce", "snack", "spread", "dressing", "blend", "mix", "soup", "crackers", "biscuits", "bar", "drink", "juice", "powder", "paste", "cubes", "granules", "herbs", "fresh", "egg"],
+    "placeholder_junk": ["eau minérale", "acqua", "wasser", "agua mineral"],
+    "meat_dairy_words": ["chicken", "beef", "pork", "lamb", "turkey", "fish", "salmon", "tuna", "bacon", "sausage", "ham", "milk", "cheese", "butter", "egg"],
+    "plant_substitute_labels": ["en:vegan", "en:vegetarian", "en:plant-based", "en:meat-free", "en:dairy-free-alternative"],
+    "require_uk_or_empty_country": true
+  }
+}

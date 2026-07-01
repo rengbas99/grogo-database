@@ -1,0 +1,56 @@
+# ── Dependencies ──────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ── Environment & Secrets ─────────────────────
+.env
+.env.local
+.env.development
+.env.production
+.env.*.local
+
+# ── Firebase Credentials ──────────────────────
+serviceAccount.json
+*serviceAccount*.json
+firebase-adminsdk*.json
+*credentials*.json
+google-credentials.json
+firebase-key.json
+
+# ── Scraped Data ──────────────────────────────
+# Contains real product data and potential PII
+data/
+scraped-data/
+final-products/
+*.data.json
+*-products.json
+*-scraped.json
+
+# ── Debug & Temp Files ────────────────────────
+debug-*
+temp-*
+tmp-*
+scratch-*
+*.log
+*.bak
+*.backup
+logs/
+old-*/
+*-backup/
+
+# ── Build Output ──────────────────────────────
+dist/
+build/
+.cache/
+
+# ── OS Files ──────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Editor ────────────────────────────────────
+.idea/
+.vscode/settings.json
+*.code-workspace
