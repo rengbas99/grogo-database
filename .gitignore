@@ -54,3 +54,15 @@ Thumbs.db
 .idea/
 .vscode/settings.json
 *.code-workspace
+
+# ── Unwanted Claude/Agent files ───────────────
+.claude/
+antigravity-review/
+CLAUDE.md
+FREE_SCRAPING_SOLUTION.md
+LISTING.md
+LOCAL_FIREBASE_SETUP.md
+QUICK_START_GUIDE.md
+README-sainsburys-apify.md
+audit_report.md
+
